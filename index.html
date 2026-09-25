@@ -100,6 +100,14 @@
   .pill { font-weight: 700; color: var(--c); }
   .tiny { font: 500 12px var(--sans); border: 1px solid var(--rule); background: #fff; border-radius: 5px; padding: 3px 8px; cursor: pointer; color: var(--ink); }
   .tiny:hover { border-color: var(--ink); }
+  .intake { margin-top: 20px; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 18px 22px 22px; }
+  .intake h3 { margin: 0 0 4px; font-size: 16px; }
+  .intake textarea { font-family: var(--mono); font-size: 13px; min-height: 130px; }
+  .sweep { margin-top: 16px; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 16px 20px; }
+  .sweep h3 { margin: 0 0 6px; font-size: 16px; }
+  .sweep ul { margin: 8px 0 0; padding-left: 18px; }
+  .sweep li { margin-bottom: 6px; font-size: 14px; }
+  .warn { color: var(--escalated); font-weight: 600; }
   footer { margin-top: 48px; font-size: 13px; color: var(--ink-2); }
 </style>
 </head>
@@ -136,8 +144,9 @@
           </div>
         </div>
         <label for="requester_email">Employee email</label>
-        <select id="requester_email" name="requester_email"></select>
-        <div class="hint">Directory stand-in. Jordan Miles has left the company and a made-up address fails verification.</div>
+        <input id="requester_email" name="requester_email" type="email" list="employee-list" placeholder="name@acme.com" autocomplete="off" spellcheck="false">
+        <datalist id="employee-list"></datalist>
+        <div class="hint">Employees in the directory: priya.shah@acme.com, marcus.lee@acme.com, dana.ortiz@acme.com (Executive), sam.wong@acme.com. jordan.miles@acme.com has left the company, and any other address fails verification.</div>
         <label for="ticket_category">Category from the form (optional)</label>
         <select id="ticket_category" name="ticket_category">
           <option value="">Let the classifier decide</option>
@@ -154,6 +163,19 @@
         </div>
         <div class="error" id="formError" role="alert"></div>
       </form>
+
+      <div class="intake">
+        <h3>Backup: send the ticket as an email</h3>
+        <p class="sub" style="margin-bottom:10px">If the form is down, employees email the helpdesk instead. Paste a raw email and it goes through the same workflow.</p>
+        <label for="raw_email" class="sr-only" style="position:absolute;left:-9999px">Raw email</label>
+        <textarea id="raw_email" spellcheck="false">From: Priya Shah <priya.shah@acme.com>
+Subject: Can't get on the Wi-Fi
+
+How do I connect to the office wifi? I am stuck and cannot sign in to the network.</textarea>
+        <div class="actions-row">
+          <button class="btn btn-primary" id="emailBtn" type="button">Process email</button>
+        </div>
+      </div>
     </div>
 
     <div>
@@ -175,14 +197,16 @@
     <div class="log-head">
       <div>
         <h2>Trace log</h2>
-        <p class="sub" style="margin:0">One row per run. Reopen an auto-closed ticket to undo it, or override a decision to log a human correction.</p>
+        <p class="sub" style="margin:0">One row per run. Reopen an auto-closed ticket to undo it, or override a decision to log a human correction. Override log owner: Support lead, reviewed weekly.</p>
       </div>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-quiet" id="sweepBtn" type="button">Run daily sweep</button>
         <button class="btn btn-quiet" id="exportBtn" type="button">Download CSV</button>
         <button class="btn btn-quiet" id="clearBtn" type="button">Clear log</button>
       </div>
     </div>
-    <div class="table-wrap"><table>
+    <div class="sweep" id="sweepPanel" hidden></div>
+    <div class="table-wrap" style="margin-top:16px"><table>
       <thead><tr><th>Time</th><th>Ticket</th><th>Employee</th><th>Category</th><th>Confidence</th><th>Outcome</th><th>Reason / action</th><th>n8n</th><th></th></tr></thead>
       <tbody id="logBody"></tbody>
     </table></div>
@@ -223,33 +247,54 @@ function fillPreset(p) {
 }
 function updateCount() { $("count").textContent = $("ticket_body").value.length.toLocaleString(); }
 
-EMPLOYEES.forEach(([v, t]) => $("requester_email").add(new Option(t, v)));
+EMPLOYEES.forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.label = t; $("employee-list").appendChild(o); });
 PRESETS.forEach((p) => { const b = document.createElement("button"); b.type = "button"; b.textContent = p.label; b.onclick = () => fillPreset(p); $("presets").appendChild(b); });
 $("ticket_id").value = newId();
 $("ticket_body").addEventListener("input", updateCount);
 
 async function submitTicket(sameAgain) {
   $("formError").textContent = "";
+  if (!$("requester_email").value.trim()) {
+    $("formError").textContent = "Enter the employee's email address before submitting.";
+    $("requester_email").focus();
+    return;
+  }
   if (!sameAgain) {
     // Client-side check mirrors the Data Contract, but the server re-checks everything.
     if (!$("ticket_id").value.trim()) $("ticket_id").value = newId();
   }
   const payload = {
-    ticket_id: $("ticket_id").value.trim(), requester_email: $("requester_email").value, urgency: $("urgency").value,
+    ticket_id: $("ticket_id").value.trim(), requester_email: $("requester_email").value.trim(), urgency: $("urgency").value,
     ticket_category: $("ticket_category").value, subject: $("subject").value, ticket_body: $("ticket_body").value,
     seen_keys: log.map((r) => r.dedupe_key),
   };
   const btn = $("submitBtn"); btn.disabled = true; btn.textContent = "Routing…";
-  try {
-    const r = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || `Server replied ${r.status}`);
-    log.unshift(data); saveLog(log); renderResult(data); renderLog(); renderMetrics();
-    if (!sameAgain) { /* keep form so "Submit again" can show dedupe */ }
-  } catch (e) {
-    $("formError").textContent = `The ticket was not routed: ${e.message}. Check that /api/triage is deployed, then try again.`;
-  } finally { btn.disabled = false; btn.textContent = "Submit ticket"; }
+  try { await send(payload); }
+  catch (e) { showDown(e, payload); }
+  finally { btn.disabled = false; btn.textContent = "Submit ticket"; }
 }
+async function send(payload) {
+  const r = await fetch("/api/triage", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  let data; try { data = await r.json(); } catch { throw new Error(`server replied ${r.status}`); }
+  if (!r.ok) throw new Error(data.error || `server replied ${r.status}`);
+  log.unshift(data); saveLog(log); renderResult(data); renderLog(); renderMetrics();
+  $("result").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+// Red Team fix: if the ticket system is down, point the employee to the email channel.
+function showDown(e, payload) {
+  const subject = encodeURIComponent(payload.subject || "Support request");
+  const body = encodeURIComponent(payload.ticket_body || "");
+  $("formError").innerHTML = `The ticket was not routed (${esc(e.message)}). The ticket system may be down, so
+    <a href="mailto:helpdesk@acme.com?subject=${subject}&body=${body}">email it to helpdesk@acme.com</a> instead.
+    Emails enter the same workflow through the backup email intake.`;
+}
+$("emailBtn").addEventListener("click", async () => {
+  $("formError").textContent = "";
+  const b = $("emailBtn"); b.disabled = true; b.textContent = "Processing…";
+  try { await send({ raw_email: $("raw_email").value, seen_keys: log.map((r) => r.dedupe_key) }); }
+  catch (e) { $("formError").textContent = `The email was not processed: ${e.message}.`; }
+  finally { b.disabled = false; b.textContent = "Process email"; }
+});
 $("ticketForm").addEventListener("submit", (e) => { e.preventDefault(); submitTicket(false); });
 $("resubmitBtn").addEventListener("click", () => submitTicket(true));
 
@@ -300,10 +345,10 @@ function renderLog() {
   $("logBody").innerHTML = log.map((r, i) => {
     const c = COLORS[r.outcome] || "var(--ink)";
     const last = r.actions && r.actions.length ? r.actions[r.actions.length - 1].action : "";
-    const note = [r.escalation_reason || last, r.reopened_at ? "Reopened by employee" : "", r.override ? `Human override: ${r.override}` : ""].filter(Boolean).join(" · ");
+    const note = [r.escalation_reason || last, r.reopened_at ? "Reopened by employee" : "", r.override ? `Human override by Support lead: ${r.override}` : ""].filter(Boolean).join(" · ");
     const reopen = r.outcome === "Auto-Closed" && !r.reopened_at ? `<button class="tiny" data-act="reopen" data-i="${i}">Reopen</button> ` : "";
     const override = r.outcome !== "Dropped (Duplicate)" && !r.override ? `<button class="tiny" data-act="override" data-i="${i}">Override</button>` : "";
-    return `<tr><td>${new Date(r.timestamp).toLocaleString()}</td><td class="mono">${esc(r.ticket_id)}</td>
+    return `<tr><td>${new Date(r.timestamp).toLocaleString()}</td><td class="mono">${esc(r.ticket_id)}${r.channel === "email" ? ' <span class="det">via email</span>' : ""}</td>
       <td>${esc(r.requester_name || r.requester_email)}</td><td>${esc(r.category || "–")}</td><td>${esc(r.confidence ?? "–")}</td>
       <td><span class="pill" style="--c:${c}">${esc(r.outcome)}</span></td><td class="wrapc">${esc(note)}</td>
       <td>${esc(r.n8n || "")}</td><td>${reopen}${override}</td></tr>`;
@@ -315,19 +360,62 @@ $("logBody").addEventListener("click", (e) => {
   if (b.dataset.act === "reopen") r.reopened_at = new Date().toISOString();
   if (b.dataset.act === "override") {
     const v = prompt("What should the correct outcome have been? (e.g. Routed to Desktop Support)");
-    if (!v) return; r.override = v; r.override_at = new Date().toISOString();
+    if (!v) return; r.override = v; r.override_by = "Support lead"; r.override_at = new Date().toISOString();
   }
   saveLog(log); renderLog(); renderMetrics();
 });
+// Trigger 3 (Spec Pack tab 1): daily unresolved-ticket sweep.
+// Red Team fix: each reminder is timed for 6:00 AM in the EMPLOYEE's own time zone.
+const SWEEP_STORE = "triage-last-sweep-v1";
+function next6am(tz) {
+  const now = new Date();
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "numeric", hourCycle: "h23" })
+    .formatToParts(now).map((p) => [p.type, p.value]));
+  const minsNow = (+parts.hour) * 60 + (+parts.minute);
+  const minsUntil = ((360 - minsNow) + 1440) % 1440 || 1440;
+  const at = new Date(now.getTime() + minsUntil * 60000);
+  return at.toLocaleString("en-US", { timeZone: tz, weekday: "short", hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+}
+$("sweepBtn").addEventListener("click", () => {
+  const today = new Date().toDateString();
+  const open = log.filter((r) => ["Routed", "Escalated", "Flagged for Human Triage", "Hold (Unverified Requester)"].includes(r.outcome)
+    || (r.outcome === "Auto-Closed" && r.reopened_at));
+  let notified = 0, skipped = 0, archived = 0;
+  const items = open.map((r) => {
+    const ageDays = Math.floor((Date.now() - new Date(r.timestamp)) / 864e5);
+    if (ageDays >= 60) { archived++; r.archived = true; return `<li><span class="mono">${esc(r.ticket_id)}</span>: ${ageDays} days old, moved to archive for the weekly human review</li>`; }
+    if (r.swept_on === today) { skipped++; return `<li><span class="mono">${esc(r.ticket_id)}</span>: already reminded today, not sent again</li>`; }
+    r.swept_on = today; notified++;
+    const tz = r.requester_timezone || "America/Chicago";
+    return `<li><span class="mono">${esc(r.ticket_id)}</span> (${esc(r.outcome)}, ${esc(r.requester_name || r.requester_email)}): reminder at <strong>${esc(next6am(tz))}</strong> their local time (${esc(tz)})</li>`;
+  });
+  saveLog(log);
+  try { localStorage.setItem(SWEEP_STORE, new Date().toISOString()); } catch {}
+  $("sweepPanel").hidden = false;
+  $("sweepPanel").innerHTML = `<h3>Daily sweep: ${open.length} unresolved ticket${open.length === 1 ? "" : "s"}</h3>
+    <div class="det">${notified} reminder${notified === 1 ? "" : "s"} scheduled in each employee's own time zone, ${skipped} skipped as already reminded today, ${archived} archived at 60+ days.</div>
+    ${items.length ? `<ul>${items.join("")}</ul>` : `<div class="det" style="margin-top:8px">Nothing unresolved. Every ticket is closed.</div>`}`;
+  renderSweepStatus();
+});
+function renderSweepStatus() {
+  let last = null; try { last = localStorage.getItem(SWEEP_STORE); } catch {}
+  const el = $("status");
+  const base = el.dataset.base || el.textContent;
+  el.dataset.base = base;
+  const stale = !last || (Date.now() - new Date(last)) > 864e5;
+  el.innerHTML = `${esc(base)} · <span class="${stale ? "warn" : ""}">${last ? "last sweep " + new Date(last).toLocaleString() : "daily sweep has not run yet"}${stale ? " (over 24 hours: run the sweep)" : ""}</span>`;
+}
+
 $("clearBtn").addEventListener("click", () => { if (confirm("Clear every row in the trace log on this browser?")) { log = []; saveLog(log); renderLog(); renderMetrics(); } });
 $("exportBtn").addEventListener("click", () => {
-  const cols = ["run_id", "timestamp", "ticket_id", "requester_email", "department", "urgency", "category", "confidence", "classifier_source", "tier", "kb_article", "kb_score", "outcome", "sent_to_human", "escalation_reason", "reopened_at", "override", "n8n", "latency_ms"];
+  const cols = ["run_id", "timestamp", "channel", "ticket_id", "requester_email", "requester_timezone", "department", "urgency", "category", "confidence", "classifier_source", "tier", "kb_article", "kb_score", "outcome", "sent_to_human", "escalation_reason", "reopened_at", "override", "override_by", "swept_on", "n8n", "latency_ms"];
   const csv = [cols.join(",")].concat(log.map((r) => cols.map((c) => `"${String(r[c] ?? "").replace(/"/g, '""')}"`).join(","))).join("\n");
   const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = "trace_log.csv"; a.click();
 });
 
 fetch("/api/health").then((r) => r.json()).then((h) => {
   $("status").textContent = `Service live · classifier: ${h.llm_classifier} · n8n forwarding: ${h.n8n_forwarding}`;
+  delete $("status").dataset.base; renderSweepStatus();
 }).catch(() => { $("status").textContent = "Service not reachable. Open this page from the Vercel URL, not as a local file."; });
 
 renderLog(); renderMetrics();
