@@ -1,0 +1,869 @@
+{
+  "name": "BUAN6385 - Ticket Triage & Escalation (starter)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "BLOCK 1 — TRIGGER\n\nThis Webhook stands in for 'New support ticket submitted' from your Trigger sheet.\n\nYour helpdesk tool needs to be configured to POST each new ticket to this URL (n8n shows you the exact URL once you activate the workflow).",
+        "height": 300,
+        "width": 420,
+        "color": 4
+      },
+      "id": "4b0cb624-3735-43f0-8817-45ef52cd594d",
+      "name": "Note: BLOCK 1 — TRIGGER\n\nThis ",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2048,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "new-support-ticket",
+        "options": {}
+      },
+      "id": "39c5e95f-076c-4b35-b02d-90e62f7796b7",
+      "name": "New Ticket Submitted",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1760,
+        384
+      ],
+      "webhookId": "74d2c6f4-41d5-43ea-beef-d88a6120c54f"
+    },
+    {
+      "parameters": {
+        "content": "BLOCK 2 — DATA CONTRACT\n\nThis Code node applies every rule from your Data Contract sheet: required fields, enum checks, and the documented defaults / holds for when a rule fails.",
+        "height": 300,
+        "width": 420,
+        "color": 5
+      },
+      "id": "f1e0ada2-5c9d-479c-9912-8839597c61d2",
+      "name": "Note: BLOCK 2 — DATA CONTRACT\n",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1568,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// BLOCK 2 -- DATA CONTRACT\n// One rule per field, matching your Data Contract sheet exactly.\nconst t = $input.item.json;\n\nconst VALID_CATEGORIES = ['HR', 'Device', 'IT Access', 'Systems', 'Facilities'];\nconst VALID_DEPARTMENTS = ['HR', 'Risk', 'Finance', 'Operations', 'Unassigned'];\nconst VALID_URGENCY = ['Low', 'Medium', 'High', 'Critical'];\n\n// ticket_body -- required, non-empty, under 3000 chars.\n// On fail: \"Route to general queue, flag needs manual read\"\nlet needsManualRead = false;\nif (!t.ticket_body || t.ticket_body.trim().length === 0 || t.ticket_body.length >= 3000) {\n  needsManualRead = true;\n}\n\n// ticket_category -- must match enum, else default to General + human triager.\nconst categoryPretagged = VALID_CATEGORIES.includes(t.ticket_category);\nconst ticket_category = categoryPretagged ? t.ticket_category : 'General';\n\n// department -- default to Unassigned, flag for manual routing.\nconst department = VALID_DEPARTMENTS.includes(t.department) ? t.department : 'Unassigned';\n\n// urgency -- default to Medium, flag for supervisor review.\nconst urgencyValid = VALID_URGENCY.includes(t.urgency);\nconst urgency = urgencyValid ? t.urgency : 'Medium';\n\n// requester_employee_id -- required, must match an active employee record.\n// TODO: replace this stub with a real HR/Workday lookup (HTTP Request node)\n// before this goes anywhere near real traffic. For now we only check presence.\nconst requesterVerified = Boolean(t.requester_employee_id);\n\nreturn [{\n  json: {\n    ...t,\n    ticket_category,\n    category_pretagged: categoryPretagged,\n    // pre-tagged categories skip the LLM classifier and are trusted at full confidence\n    classification_confidence: categoryPretagged ? 1.0 : null,\n    department,\n    urgency,\n    needs_manual_read: needsManualRead,\n    urgency_defaulted: !urgencyValid,\n    requester_verified: requesterVerified,\n  },\n}];"
+      },
+      "id": "1c62d9f8-993d-4b7a-9eac-2a81b71783ff",
+      "name": "Validate Data Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1296,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Data Contract failure: requester_employee_id missing / not verified.\n// \"Flag 'unverified requester', hold ticket until confirmed.\"\nconst t = $input.item.json;\nreturn [{\n  json: {\n    ...t,\n    final_outcome: 'held_unverified_requester',\n    escalated: false,\n    kb_similarity: null,\n  },\n}];"
+      },
+      "id": "0e43bb34-7111-4719-ad09-fe8c527d6326",
+      "name": "Outcome: Hold (Unverified Requester)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1040,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.requester_verified }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "6767ed20-0d80-49cb-ab8b-69dcea42e4ce",
+      "name": "Requester Verified?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -1040,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// BLOCK 1 -- TRIGGER, \"what if it fires twice?\"\n// Dedupe on ticket_id + employee email, per your Trigger sheet.\n//\n// NOTE: getWorkflowStaticData persists small values on THIS workflow only,\n// and is fine for a class demo. Before real traffic, swap this for a\n// real \"seen key\" table (Redis / Postgres / a dedupe column in your DB).\nconst t = $input.item.json;\nconst dedupeKey = `${t.ticket_id}::${t.requester_employee_id}`;\n\nconst staticData = this.getWorkflowStaticData('global');\nif (!staticData.seenKeys) staticData.seenKeys = {};\n\nconst isDuplicate = Boolean(staticData.seenKeys[dedupeKey]);\nif (!isDuplicate) {\n  staticData.seenKeys[dedupeKey] = Date.now();\n}\n\nreturn [{ json: { ...t, is_duplicate: isDuplicate } }];"
+      },
+      "id": "86c2a302-7eba-4338-99df-7733e976550f",
+      "name": "Dedupe Check (ticket_id + email)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -784,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.is_duplicate }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "7d9e1951-84b1-4e36-b45b-0a0cd05b7614",
+      "name": "Already Seen (Duplicate)?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -528,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Duplicate delivery of an event we already processed. Drop it, but say so.\nconst t = $input.item.json;\nreturn [{ json: { ...t, final_outcome: 'dropped_duplicate', escalated: false, kb_similarity: null } }];"
+      },
+      "id": "2be21f7e-2dc7-4b3c-bbf8-ded281071278",
+      "name": "Outcome: Dropped (Duplicate)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -528,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "content": "BLOCK 4 — ACTIONS\n\nEvery HTTP Request node below is an ACTION from your Actions sheet. They're pointed at https://httpbin.org/post as a placeholder so the whole workflow runs end-to-end today. Swap the URL + add real auth once you have your Helpdesk/HR/Teams endpoints.",
+        "height": 300,
+        "width": 440,
+        "color": 6
+      },
+      "id": "d7e95b24-39a4-4f7b-8f0e-a96c270698ff",
+      "name": "Note: BLOCK 4 — ACTIONS\n\nEvery",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -304,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ action: 'auto_reply', ticket_id: $json.ticket_id, employee_id: $json.requester_employee_id, message: 'We are working on it.' }) }}",
+        "options": {}
+      },
+      "id": "8ef24f01-e6f8-497a-8f7e-83f931179fa1",
+      "name": "Send Auto-Reply (Action)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -256,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "content": "BLOCK 3 — DECISION TABLE\n\nNOTE FOR YOUR TEAM: your Data Contract says ticket_category arrives 'auto-tagged' upstream, but Decision Table Step 1 has THIS workflow classify it with an LLM. Those two rows disagree. This branch resolves it: trust an already-valid category, otherwise call the classifier. Decide as a team which behavior you actually want and say so in your write-up -- this is exactly the kind of gap your red-team round is for.",
+        "height": 340,
+        "width": 460,
+        "color": 3
+      },
+      "id": "beaebdd2-38d0-4f47-8c44-c1406489abb6",
+      "name": "Note: BLOCK 3 — DECISION TABLE",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.category_pretagged }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "ed14f347-67fb-4b24-b67e-c53ef0204034",
+      "name": "Category Already Tagged?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        32,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'gpt-4o-mini',\n  response_format: { type: 'json_object' },\n  messages: [\n    { role: 'system', content: 'Classify the support ticket into exactly one of: HR, Device, IT Access, Systems, Facilities. Reply as JSON: {\\\"category\\\": string, \\\"confidence\\\": number between 0 and 1}.' },\n    { role: 'user', content: $json.ticket_body }\n  ]\n}) }}",
+        "options": {}
+      },
+      "id": "c1acc7cb-de34-4366-8530-a5f322df916c",
+      "name": "Call Classifier LLM (Model)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        288,
+        304
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "jq4K8QdMcLAbv4Pr",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// BLOCK 3, Step 1 -- pull the classifier's JSON answer back out and\n// re-attach it to the ORIGINAL ticket (the HTTP Request node above\n// replaced $json with the OpenAI response, so we reach back to the\n// last node that still had full ticket data).\nconst original = $('Validate Data Contract').item.json;\nconst raw = $input.item.json;\n\nlet parsed;\ntry {\n  const content = raw.choices?.[0]?.message?.content ?? '{}';\n  parsed = JSON.parse(content);\n} catch (err) {\n  parsed = { category: 'General', confidence: 0 };\n}\n\nreturn [{\n  json: {\n    ...original,\n    ticket_category: parsed.category || 'General',\n    classification_confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,\n  },\n}];"
+      },
+      "id": "1c914002-4206-4b2b-9fee-9967f76cd503",
+      "name": "Parse Classifier Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        544,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.classification_confidence }}",
+              "operation": "largerEqual",
+              "value2": 0.8
+            }
+          ]
+        }
+      },
+      "id": "cdc180f2-83e9-4caa-bb10-b1840df1bf55",
+      "name": "Classifier Confidence >= 0.8?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        800,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// BLOCK 5 -- FAILURE MODE: classifier is not confident enough to trust.\n// \"Below 0.8 confidence, route to a human instead of auto-closing.\"\nconst t = $input.item.json;\nreturn [{\n  json: {\n    ...t,\n    final_outcome: 'flagged_for_human_triager_low_confidence',\n    escalated: true,\n    escalation_reason: `low_classifier_confidence=${t.classification_confidence}`,\n    kb_similarity: null,\n  },\n}];"
+      },
+      "id": "493e61c7-d606-43cf-a4f6-22e607cadce2",
+      "name": "Outcome: Flagged for Human Triager",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1072,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://httpbin.org/get",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "employee_id",
+              "value": "={{ $json.requester_employee_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "24316e53-129b-4178-83fb-acb736525a51",
+      "name": "Get Employee Tier (Rule Lookup)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1072,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// BLOCK 3, Step 4 -- Escalate angry or at-risk employee.\n// Sentiment/category/urgency are INPUTS. A human always makes the final call\n// downstream (this node only flags that a human is needed; it does not act).\n//\n// TODO: replace the fake employee_tier read below once the ERM lookup HTTP\n// node above is pointed at your real system and returns real tier data.\nconst original = $('Parse Classifier Response').item.json ?? $('Validate Data Contract').item.json;\nconst t = { ...original };\n\nconst ALWAYS_HUMAN_CATEGORIES = ['Security', 'Legal', 'HR']; // Failure Modes sheet, row 4\nconst sentimentScore = t.sentiment_score ?? 0; // wire up a real sentiment model/API here\n\nconst mustEscalate =\n  ALWAYS_HUMAN_CATEGORIES.includes(t.ticket_category) ||\n  t.urgency === 'Critical' ||\n  sentimentScore <= -0.6;\n\nreturn [{\n  json: {\n    ...t,\n    sentiment_score: sentimentScore,\n    escalated: mustEscalate,\n    escalation_reason: mustEscalate\n      ? `category=${t.ticket_category}, urgency=${t.urgency}, sentiment=${sentimentScore}`\n      : null,\n  },\n}];"
+      },
+      "id": "a4ecb393-c68a-43c6-a4e9-c38196293ad7",
+      "name": "Escalation Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1328,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.escalated }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "de62e131-2103-4ed0-811f-348a09e4c8d7",
+      "name": "Escalate to Human?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1584,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ action: 'escalate_notify', ticket_id: $json.ticket_id, reason: $json.escalation_reason }) }}",
+        "options": {}
+      },
+      "id": "1030ef1d-b16e-4351-bdcd-ff4afceff263",
+      "name": "Notify Support Lead / On-Call (Action)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1840,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const t = $input.item.json;\nreturn [{ json: { ...t, final_outcome: 'escalated_to_human' } }];"
+      },
+      "id": "6098d376-2393-492a-ac5d-5533aa2a578d",
+      "name": "Outcome: Escalated",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2112,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ action: 'kb_similarity_search', ticket_body: $json.ticket_body }) }}",
+        "options": {}
+      },
+      "id": "2e27b1e7-270b-427b-8dd8-8d15ef628822",
+      "name": "Get KB Match Score (Model)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1840,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Placeholder: your real KB search will return a similarity score.\n// httpbin.org just echoes our request, so we fake a score here for\n// testing. Delete this line once KB_MATCH points at your real KB search.\nconst t = $input.item.json;\nconst fakedSimilarity = 0.6; // <-- replace with real response.body.similarity\nreturn [{ json: { ...t, kb_similarity: fakedSimilarity } }];"
+      },
+      "id": "88e6ded9-d0bb-4a0f-9d87-2e61d2c372bf",
+      "name": "Parse KB Score (placeholder)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2112,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.kb_similarity }}",
+              "operation": "largerEqual",
+              "value2": 0.75
+            }
+          ]
+        }
+      },
+      "id": "ba9b653c-67da-4ba2-8e79-84dd5a406afa",
+      "name": "KB Similarity >= 0.75?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2368,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ action: 'auto_close', ticket_id: $json.ticket_id, kb_similarity: $json.kb_similarity }) }}",
+        "options": {}
+      },
+      "id": "386367ba-8b1d-4b5c-8182-f775b55173d9",
+      "name": "Auto-Close w/ KB Link (Action)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2624,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const t = $input.item.json;\nreturn [{ json: { ...t, final_outcome: 'auto_closed_with_kb_link' } }];"
+      },
+      "id": "7ca1ecea-c92f-43b8-8cd2-2d0ed0a7cdd3",
+      "name": "Outcome: Auto-Closed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2880,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ action: 'route_ticket', ticket_id: $json.ticket_id, category: $json.ticket_category, department: $json.department }) }}",
+        "options": {}
+      },
+      "id": "3dae4a33-bc6f-4dc8-9a9e-fa36b567a6f6",
+      "name": "Route to Department Queue (Action)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2624,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const t = $input.item.json;\nreturn [{ json: { ...t, final_outcome: 'routed_to_department_queue' } }];"
+      },
+      "id": "a002049c-2966-406f-9a4c-bbcbcd50b5eb",
+      "name": "Outcome: Routed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2880,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "content": "BLOCK 6 — OBSERVABILITY\n\nEvery finished path lands here. This builds the one-row-per-run trace record from your Observability sheet, then appends it. Swap the final HTTP Request for a real Google Sheets / Airtable / Postgres node once you've picked where the trace table actually lives.\n\nExtend this: also wire 'Outcome: Hold' and 'Outcome: Dropped' in further up into this same node -- right now only the four main outcomes are logged, per your own '3 sharp rows beat 15 vague ones' rule, that's a deliberate scope cut for you to close.",
+        "height": 340,
+        "width": 460,
+        "color": 7
+      },
+      "id": "aba3462a-1e06-4a92-9220-cf3d8f3d78c0",
+      "name": "Note: BLOCK 6 — OBSERVABILITY\n",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3152,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// BLOCK 6 -- OBSERVABILITY\n// One row per run: run id, ticket id, every decision + confidence, final outcome.\nconst t = $input.item.json;\n\nreturn [{\n  json: {\n    run_id: $execution.id,\n    ticket_id: t.ticket_id,\n    ticket_category: t.ticket_category,\n    classification_confidence: t.classification_confidence ?? null,\n    urgency: t.urgency,\n    kb_similarity: t.kb_similarity ?? null,\n    escalated: Boolean(t.escalated),\n    escalation_reason: t.escalation_reason ?? null,\n    final_outcome: t.final_outcome,\n    timestamp: new Date().toISOString(),\n  },\n}];"
+      },
+      "id": "2dbbe264-7140-4e9f-9d63-a0309141f522",
+      "name": "Build Trace Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3184,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "b8d78e61-55a7-491d-a7a8-7a291ebbf126",
+      "name": "Append Trace Row (Observability)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3440,
+        384
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "New Ticket Submitted": {
+      "main": [
+        [
+          {
+            "node": "Validate Data Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Data Contract": {
+      "main": [
+        [
+          {
+            "node": "Requester Verified?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Requester Verified?": {
+      "main": [
+        [
+          {
+            "node": "Dedupe Check (ticket_id + email)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome: Hold (Unverified Requester)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedupe Check (ticket_id + email)": {
+      "main": [
+        [
+          {
+            "node": "Already Seen (Duplicate)?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Seen (Duplicate)?": {
+      "main": [
+        [
+          {
+            "node": "Send Auto-Reply (Action)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome: Dropped (Duplicate)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Auto-Reply (Action)": {
+      "main": [
+        [
+          {
+            "node": "Category Already Tagged?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Category Already Tagged?": {
+      "main": [
+        [
+          {
+            "node": "Get Employee Tier (Rule Lookup)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Classifier LLM (Model)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Classifier LLM (Model)": {
+      "main": [
+        [
+          {
+            "node": "Parse Classifier Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Classifier Response": {
+      "main": [
+        [
+          {
+            "node": "Classifier Confidence >= 0.8?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classifier Confidence >= 0.8?": {
+      "main": [
+        [
+          {
+            "node": "Get Employee Tier (Rule Lookup)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outcome: Flagged for Human Triager",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Employee Tier (Rule Lookup)": {
+      "main": [
+        [
+          {
+            "node": "Escalation Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escalation Decision": {
+      "main": [
+        [
+          {
+            "node": "Escalate to Human?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escalate to Human?": {
+      "main": [
+        [
+          {
+            "node": "Notify Support Lead / On-Call (Action)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get KB Match Score (Model)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Support Lead / On-Call (Action)": {
+      "main": [
+        [
+          {
+            "node": "Outcome: Escalated",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get KB Match Score (Model)": {
+      "main": [
+        [
+          {
+            "node": "Parse KB Score (placeholder)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse KB Score (placeholder)": {
+      "main": [
+        [
+          {
+            "node": "KB Similarity >= 0.75?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "KB Similarity >= 0.75?": {
+      "main": [
+        [
+          {
+            "node": "Auto-Close w/ KB Link (Action)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Route to Department Queue (Action)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto-Close w/ KB Link (Action)": {
+      "main": [
+        [
+          {
+            "node": "Outcome: Auto-Closed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route to Department Queue (Action)": {
+      "main": [
+        [
+          {
+            "node": "Outcome: Routed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome: Flagged for Human Triager": {
+      "main": [
+        [
+          {
+            "node": "Build Trace Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome: Escalated": {
+      "main": [
+        [
+          {
+            "node": "Build Trace Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome: Auto-Closed": {
+      "main": [
+        [
+          {
+            "node": "Build Trace Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome: Routed": {
+      "main": [
+        [
+          {
+            "node": "Build Trace Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Trace Row": {
+      "main": [
+        [
+          {
+            "node": "Append Trace Row (Observability)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "440946bf-7d00-4a7c-981b-82800bfe843c",
+  "meta": {
+    "instanceId": "5cdd0bbd1c1590dd355f213bc32d37ee6b954419b92fe48c4fba52a760bef315"
+  },
+  "nodeGroups": [],
+  "id": "aW6vT8E9CXgs9vCM",
+  "tags": []
+}

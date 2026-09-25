@@ -1,0 +1,10 @@
+{
+  "name": "buan6385-ticket-triage",
+  "version": "1.0.0",
+  "private": true,
+  "description": "BUAN 6385 - Automation Gals - Ticket Triage & Escalation app (Vercel + n8n)",
+  "scripts": {
+    "test": "node scripts/test-scenarios.js"
+  },
+  "engines": { "node": ">=18" }
+}

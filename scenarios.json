@@ -1,0 +1,14 @@
+[
+  { "label": "Password how-to", "expect": "Auto-Closed",
+    "ticket": { "ticket_id": "T-1001", "requester_email": "priya.shah@acme.com", "subject": "Forgot my password", "ticket_body": "How do I reset my password? I forgot it and I'm locked out of my login.", "urgency": "Medium" } },
+  { "label": "Broken laptop", "expect": "Routed",
+    "ticket": { "ticket_id": "T-1002", "requester_email": "marcus.lee@acme.com", "subject": "Laptop screen flickering", "ticket_body": "My laptop screen keeps flickering and the battery drains in an hour. The charger seems fine.", "urgency": "High" } },
+  { "label": "Payroll dispute", "expect": "Escalated",
+    "ticket": { "ticket_id": "T-1003", "requester_email": "sam.wong@acme.com", "subject": "Paycheck wrong again", "ticket_body": "This is the third time my payroll error hasn't been fixed. My salary was underpaid and this is unacceptable.", "urgency": "High" } },
+  { "label": "Vague request", "expect": "Flagged for Human Triage",
+    "ticket": { "ticket_id": "T-1004", "requester_email": "dana.ortiz@acme.com", "subject": "Something is off", "ticket_body": "Things are not working the way they should today, can someone take a look?", "urgency": "Low" } },
+  { "label": "Former employee", "expect": "Hold (Unverified Requester)",
+    "ticket": { "ticket_id": "T-1005", "requester_email": "jordan.miles@acme.com", "subject": "Need VPN access", "ticket_body": "Please restore my VPN access.", "urgency": "Medium" } },
+  { "label": "Executive, system outage", "expect": "Routed",
+    "ticket": { "ticket_id": "T-1006", "requester_email": "dana.ortiz@acme.com", "subject": "Salesforce is down", "ticket_body": "Salesforce shows a server error and the system crash happens on every report.", "urgency": "High" } }
+]
