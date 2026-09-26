@@ -4,8 +4,8 @@
 **Team:** Automation Gals
 **Members:** Saanvi Dusa, Alicia Penuelas, Neethu Keshava Murthy
 
-**Live app (Vercel):** https://REPLACE-ME.vercel.app
-**Source code (GitHub):** https://github.com/REPLACE-ME/buan6385-ticket-triage
+**Live app (Vercel):** [https://REPLACE-ME.vercel.app](https://buan6385-ticket-triage.vercel.app/)
+**Source code (GitHub):** [https://github.com/REPLACE-ME/buan6385-ticket-triage](https://github.com/neethukeshavamurthy/buan6385-ticket-triage)
 **n8n workflow:** `n8n/workflow.json` (BUAN6385 - Ticket Triage & Escalation)
 
 **What it does:** when an employee submits a support ticket, the system validates it against our
