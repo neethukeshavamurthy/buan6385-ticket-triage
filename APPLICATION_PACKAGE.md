@@ -1,22 +1,18 @@
 # Application Package: Ticket Triage & Escalation
 
-**Course:** BUAN 6385
+**Course:** BUAN 6385 Robotic Process Automation
+
 **Team:** Automation Gals
+
 **Members:** Saanvi Dusa, Alicia Penuelas, Neethu Keshava Murthy
 
-**Live app (Vercel):** [https://REPLACE-ME.vercel.app](https://buan6385-ticket-triage.vercel.app/)
-**Source code (GitHub):** [https://github.com/REPLACE-ME/buan6385-ticket-triage](https://github.com/neethukeshavamurthy/buan6385-ticket-triage)
-**n8n workflow:** `n8n/workflow.json` (BUAN6385 - Ticket Triage & Escalation)
+**Live app (Vercel):** https://buan6385-ticket-triage.vercel.app/
 
-**What it does:** when an employee submits a support ticket, the system validates it against our
-data contract, drops duplicates, sends an acknowledgement, classifies it with a model, and then
-auto-closes it with a knowledge-base link, routes it to a department queue, or hands it to a
-person. Every run writes one trace row, and the dashboard shows our three health numbers.
+**Source code (GitHub):** https://github.com/neethukeshavamurthy/buan6385-ticket-triage
 
-**How we built it:** we wired the Week 4 blocks in n8n first. Vercel cannot host n8n or reach an
-n8n running on our laptop, so we ported the same nodes, in the same order, into a small web app
-(`api/_engine.js`, one function per n8n node). When `N8N_WEBHOOK_URL` is set, the app also sends
-every ticket to the published n8n webhook, so each run appears in both places.
+**n8n workflow:** `workflow.json` in this repository (BUAN6385 - Ticket Triage & Escalation)
+
+**What it does:** when an employee submits a support ticket, the system validates it against our data contract, drops duplicates, classifies it with a model, and then auto-closes it with a knowledge-base link, routes it to a department queue, or hands it to a person. The employee gets a confirmation only after the final decision. Every run writes one trace row, and the dashboard shows our three health numbers.
 
 ---
 
